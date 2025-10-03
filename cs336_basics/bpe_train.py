@@ -157,8 +157,11 @@ def train_bpe(
     """
     # TODO: Add chunking for large files (11GB+ data files) to avoid OOM errors.
     # Use find_chunk_boundaries from pretokenization_example.py for parallel processing.
+    
+    # Special tokens are always added to the vocab.
     special_tokens = special_tokens or []
 
+    # Read the entire file into memory.
     with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
 
@@ -183,6 +186,9 @@ def train_bpe(
     current_vocab_size = len(init_vocab_values)
     max_merges = max(0, vocab_size - current_vocab_size)
 
+    # Iteratively merge the most frequent adjacent pair until `vocab_size` is reached.
+    # The merge is applied to all word sequences in the multiset.
+    # TODO: Parallelize this loop using multiple processes.
     for _ in range(max_merges):
         pair_counts = _get_pair_counts(words)
         if not pair_counts:
@@ -192,11 +198,12 @@ def train_bpe(
             pair_counts.items(), key=lambda kv: (kv[1], kv[0][0] + b"\x00" + kv[0][1])
         )
 
+        # Add the merge to the list of merges.
         merges.append(best_pair)
-        # Apply merge to all word sequences
+        # Apply merge to all word sequences.
         words = _apply_merge(words, best_pair)
 
-        # Track newly formed symbol for vocab size accounting
+        # Track newly formed symbol for vocab size accounting.
         init_vocab_values.add(best_pair[0] + best_pair[1])
         current_vocab_size = len(init_vocab_values)
         if current_vocab_size >= vocab_size:
