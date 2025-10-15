@@ -8,6 +8,14 @@ import regex as re
 
 from .bpe_train import GPT2_PRETOKEN_PATTERN
 
+# Profile decorator - only active when line_profiler is used
+try:
+    import line_profiler
+    profile = line_profiler.profile
+except ImportError:
+    def profile(func):
+        return func
+
 
 class Tokenizer:
     def __init__(
@@ -138,15 +146,18 @@ class Tokenizer:
         # invert
         return {v: k for k, v in byte_to_unicode.items()}
 
+    @profile
     def encode(self, text: str) -> list[int]:
         if not text:
             return []
+        print(f"Encoding text: {text[:10]} of length {len(text)}")
 
         # Build special token matcher (order by length desc to handle overlaps greedily)
         specials = list(self.special_tokens) # convert to list to allow sorting
         specials.sort(key=len, reverse=True) # sort by length descending to handle overlaps greedily
         segments: list[tuple[str, bool]] = []  # (substring, is_special)
         if specials:
+            # split on special tokens
             pattern = re.compile("|".join(re.escape(tok) for tok in specials))
             pos = 0
             for m in pattern.finditer(text):
@@ -175,6 +186,9 @@ class Tokenizer:
                 piece_b = piece.encode("utf-8")
                 for token_bytes in self._bpe(piece_b):
                     out_ids.append(self.bytes_to_id[token_bytes])
+            if len(out_ids) % 10000 == 0:
+                print(f"Encoded {len(out_ids)} tokens out of {len(text)}. Progress: {len(out_ids) / len(text) * 100:.2f}%")
+                print(f"Latest text: {seg[:100]}")
         return out_ids
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
@@ -204,6 +218,7 @@ class Tokenizer:
             raise
 
     # --- internal helpers ---
+    @profile
     def _bpe(self, byte_seq: bytes) -> list[bytes]:
         """
         Apply BPE to a byte sequence.

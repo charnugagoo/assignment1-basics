@@ -7,13 +7,87 @@ Usage:
     uv run -m cs336_basics tokenize decode TOKEN_FILE --vocab VOCAB_FILE --merges MERGES_FILE [OPTIONS]
 
 Examples:
-    # Encode a text file to token IDs
+    # Single File Tokenization
+    uv run -m cs336_basics tokenize encode data/TinyStoriesV2-GPT4-valid.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/TinyStoriesV2-GPT4-valid.json
+
+    uv run -m cs336_basics tokenize encode data/TinyStoriesV2-GPT4-train.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/TinyStoriesV2-GPT4-train.json
+    
+    # Batch Processing (Recommended for Multiple Files)
+    mkdir -p data_tokenized
+    uv run -m cs336_basics tokenize encode \
+      --input-dir data/ \
+      --output-dir data_tokenized/ \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>"
+    
+    # Individual File Examples
+    # TinyStories validation set (21MB)
+    uv run -m cs336_basics tokenize encode data/TinyStoriesV2-GPT4-valid.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/TinyStoriesV2-GPT4-valid.json
+    
+    # TinyStories training set (2.1GB) - use streaming for large files
+    uv run -m cs336_basics tokenize encode data/TinyStoriesV2-GPT4-train.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/TinyStoriesV2-GPT4-train.json \
+      --streaming
+    
+    # OWT validation set (277MB)
+    uv run -m cs336_basics tokenize encode data/owt_valid.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/owt_valid.json \
+      --streaming
+    
+    # OWT training set (11GB) - definitely use streaming
+    uv run -m cs336_basics tokenize encode data/owt_train.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/owt_train.json \
+      --streaming
+    
+    # Alternative Output Formats
+    # Save as text format (space-separated token IDs)
+    uv run -m cs336_basics tokenize encode data/TinyStoriesV2-GPT4-valid.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --format text \
+      --output data_tokenized/TinyStoriesV2-GPT4-valid.txt
+    
+    # Save as binary format (more compact)
+    uv run -m cs336_basics tokenize encode data/TinyStoriesV2-GPT4-valid.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --format binary \
+      --output data_tokenized/TinyStoriesV2-GPT4-valid.bin
+    
+    # Decode Commands (with special token)
+    uv run -m cs336_basics tokenize decode data_tokenized/TinyStoriesV2-GPT4-valid.json \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/TinyStoriesV2-GPT4-valid_decoded.txt
+    
+    # Basic examples (without special tokens)
     uv run -m cs336_basics tokenize encode data/sample.txt --vocab vocab.json --merges merges.txt --output tokens.json
-    
-    # Decode token IDs back to text
     uv run -m cs336_basics tokenize decode tokens.json --vocab vocab.json --merges merges.txt --output decoded.txt
-    
-    # Batch encode multiple files
     uv run -m cs336_basics tokenize encode --input-dir ./texts --output-dir ./tokens --vocab vocab.json --merges merges.txt
 """
 
@@ -21,10 +95,19 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Iterator, TextIO
 
 from .tokenizer import Tokenizer
+
+# Profile decorator - only active when line_profiler is used
+try:
+    import line_profiler
+    profile = line_profiler.profile
+except ImportError:
+    def profile(func):
+        return func
 
 
 def load_tokenizer(vocab_path: Path, merges_path: Path, special_tokens: list[str] | None = None) -> Tokenizer:
@@ -100,12 +183,15 @@ def detect_token_format(file_path: Path) -> str:
         return "text"
 
 
+@profile
 def encode_command(args: argparse.Namespace) -> None:
     """Handle the encode subcommand."""
     # Load tokenizer
     print(f"Loading tokenizer from {args.vocab} and {args.merges}...")
+    start_time = time.time()
     tokenizer = load_tokenizer(args.vocab, args.merges, args.special_tokens)
-    print(f"Tokenizer loaded with {len(tokenizer.id_to_bytes)} tokens")
+    load_time = time.time() - start_time
+    print(f"Tokenizer loaded with {len(tokenizer.id_to_bytes)} tokens in {load_time:.2f}s")
     
     # Determine input files
     input_files = []
@@ -147,15 +233,21 @@ def encode_command(args: argparse.Namespace) -> None:
         
         # Encode file
         token_ids = []
+        encode_start = time.time()
         with open(input_file, "r", encoding="utf-8") as f:
             if args.streaming:
                 # Stream processing for large files
                 for token_id in encode_file_streaming(tokenizer, f, args.chunk_size):
                     token_ids.append(token_id)
+                    if len(token_ids) % 1000 == 0:
+                        print(f"Encoded {len(token_ids)} tokens. Latest file: {input_file}")
             else:
                 # Load entire file
                 content = f.read()
                 token_ids = tokenizer.encode(content)
+                print(f"Encoded {len(token_ids)} tokens. Latest file: {input_file}")
+        encode_time = time.time() - encode_start
+        print(f"Encoding took {encode_time:.2f}s for {len(token_ids)} tokens ({len(token_ids)/encode_time:.0f} tokens/sec)")
         
         # Save tokens
         if output_format == "json":
