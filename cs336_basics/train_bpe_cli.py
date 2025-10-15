@@ -3,10 +3,10 @@
 Command-line interface for training BPE tokenizers.
 
 Usage:
-    python -m cs336_basics.train_bpe [OPTIONS] INPUT_FILE
+    uv run -m cs336_basics [OPTIONS] INPUT_FILE
 
 Example:
-    python -m cs336_basics.train_bpe data/sample.txt --vocab-size 1000
+    uv run -m cs336_basics data/sample.txt --vocab-size 1000
 """
 
 import argparse
@@ -135,6 +135,13 @@ Examples:
         default="merges.txt",
         help="Output merges filename (default: merges.txt)"
     )
+
+    parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=1000,
+        help="Print progress every N merges (default: 1000; set 0 to disable)"
+    )
     
     args = parser.parse_args()
     
@@ -165,6 +172,7 @@ Examples:
             input_path=args.input_file,
             vocab_size=args.vocab_size,
             special_tokens=args.special_tokens,
+            progress_interval=(args.progress_interval or None) if args.progress_interval > 0 else None,
         )
         
         print(f"Training completed!")

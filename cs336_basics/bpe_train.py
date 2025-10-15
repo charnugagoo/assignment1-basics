@@ -137,6 +137,7 @@ def train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
     special_tokens: list[str] | None = None,
+    progress_interval: int | None = None,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """Train a byte-level BPE tokenizer and return (vocab, merges).
 
@@ -162,39 +163,49 @@ def train_bpe(
     special_tokens = special_tokens or []
 
     # Read the entire file into memory.
+    print(f"Reading input file: {input_path}")
     with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
 
     # Remove special tokens from training spans by splitting on them
+    print(f"Removing special tokens: {special_tokens}")
     segments = _split_on_specials(text, special_tokens)
+    print(f"Pretokenizing head of segments: {segments[:5]}")
     pre_tokens: list[str] = []
     for seg in segments:
         pre_tokens.extend(_pretokenize(seg))
 
     # Build word multiset of byte symbol sequences
+    print(f"Building word multiset of byte symbol sequences: {pre_tokens[:5]}")
     words = _words_to_symbol_sequences(pre_tokens)
+    print(f"Head of word multiset: {list(words.keys())[:5]}")
 
     # Initial vocabulary: 256 single-byte symbols + specials
+    print(f"Initial vocabulary: {special_tokens}")
     init_vocab_values: set[bytes] = set(bytes([i]) for i in range(256))
     for tok in special_tokens:
         init_vocab_values.add(tok.encode("utf-8"))
 
+    print(f"Initial vocabulary preview: {list(init_vocab_values)[:5]}")
     merges: list[tuple[bytes, bytes]] = []
 
     # Target number of total tokens in vocab
     # We will add one new symbol per merge
     current_vocab_size = len(init_vocab_values)
+    print(f"Current vocabulary size: {current_vocab_size}")
     max_merges = max(0, vocab_size - current_vocab_size)
 
     # Iteratively merge the most frequent adjacent pair until `vocab_size` is reached.
     # The merge is applied to all word sequences in the multiset.
     # TODO: Parallelize this loop using multiple processes.
-    for _ in range(max_merges):
+    if progress_interval and progress_interval > 0:
+        print(f"Starting BPE merges: planning to perform up to {max_merges} merges")
+    for merge_index in range(1, max_merges + 1):
         pair_counts = _get_pair_counts(words)
         if not pair_counts:
             break
         # Deterministic tie-break: by count desc, then lexicographic bytes order
-        best_pair, _ = max(
+        best_pair, best_count = max(
             pair_counts.items(), key=lambda kv: (kv[1], kv[0][0] + b"\x00" + kv[0][1])
         )
 
@@ -206,12 +217,21 @@ def train_bpe(
         # Track newly formed symbol for vocab size accounting.
         init_vocab_values.add(best_pair[0] + best_pair[1])
         current_vocab_size = len(init_vocab_values)
+
+        if progress_interval and progress_interval > 0:
+            if merge_index % progress_interval == 0 or current_vocab_size >= vocab_size:
+                print(
+                    f"Merge {merge_index}/{max_merges}: formed {len(merges)} merges, "
+                    f"current vocab size {current_vocab_size}, top pair freq {best_count}"
+                )
         if current_vocab_size >= vocab_size:
             break
 
     # Build final vocab mapping: assign contiguous ids [0..N-1]
     vocab_list = sorted(init_vocab_values)
     vocab: dict[int, bytes] = {i: b for i, b in enumerate(vocab_list)}
+    if progress_interval and progress_interval > 0:
+        print(f"Completed BPE training with {len(merges)} merges and vocab size {len(vocab_list)}")
     return vocab, merges
 
 
