@@ -5,6 +5,8 @@ from typing import Any
 import json
 import os
 import regex as re
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 from .bpe_train import GPT2_PRETOKEN_PATTERN
 
@@ -58,6 +60,14 @@ class Tokenizer:
         self.merges: list[tuple[bytes, bytes]] = list(merges)
         self.merge_rank: dict[tuple[bytes, bytes], int] = {p: i for i, p in enumerate(self.merges)}
         print(f"merge_rank size: {len(self.merge_rank)}")
+        
+        # Pre-compile regex patterns for performance
+        self._gpt2_pattern = re.compile(GPT2_PRETOKEN_PATTERN)
+        self._special_token_pattern = None
+        if self.special_tokens:
+            # Sort by length descending to handle overlaps greedily
+            sorted_specials = sorted(self.special_tokens, key=len, reverse=True)
+            self._special_token_pattern = re.compile("|".join(re.escape(tok) for tok in sorted_specials))
 
     @classmethod
     def from_files(
@@ -146,21 +156,45 @@ class Tokenizer:
         # invert
         return {v: k for k, v in byte_to_unicode.items()}
 
+    def _process_segment(self, segment_data: tuple[int, str, bool]) -> tuple[int, list[int]]:
+        """Process a single segment and return (index, token_ids).
+        
+        Args:
+            segment_data: Tuple of (index, segment_text, is_special)
+            
+        Returns:
+            Tuple of (index, list_of_token_ids)
+        """
+        index, segment, is_special = segment_data
+        if not segment:
+            return index, []
+        
+        if is_special:
+            tok_b = segment.encode("utf-8")
+            return index, [self.bytes_to_id[tok_b]]
+        
+        # Regular text processing
+        token_ids = []
+        for m in self._gpt2_pattern.finditer(segment):
+            piece = m.group(0)
+            piece_b = piece.encode("utf-8")
+            for token_bytes in self._bpe(piece_b):
+                token_ids.append(self.bytes_to_id[token_bytes])
+                if len(token_ids) % 100000 == 0:
+                    print(f"Index {index}: Processed {len(token_ids)} tokens out of {len(segment)}. Progress: {len(token_ids) / len(segment) * 100:.2f}%; Latest text: {segment[:100]}")
+        return index, token_ids
+
     @profile
-    def encode(self, text: str) -> list[int]:
+    def encode(self, text: str, parallel: bool = True, max_workers: int = 4) -> list[int]:
         if not text:
             return []
-        print(f"Encoding text: {text[:10]} of length {len(text)}")
+        # print(f"Encoding text: {text[:10]} of length {len(text)}")
 
-        # Build special token matcher (order by length desc to handle overlaps greedily)
-        specials = list(self.special_tokens) # convert to list to allow sorting
-        specials.sort(key=len, reverse=True) # sort by length descending to handle overlaps greedily
+        # Build special token matcher using pre-compiled pattern
         segments: list[tuple[str, bool]] = []  # (substring, is_special)
-        if specials:
-            # split on special tokens
-            pattern = re.compile("|".join(re.escape(tok) for tok in specials))
+        if self._special_token_pattern:
             pos = 0
-            for m in pattern.finditer(text):
+            for m in self._special_token_pattern.finditer(text):
                 if m.start() > pos:
                     segments.append((text[pos:m.start()], False))
                 segments.append((m.group(0), True))
@@ -169,26 +203,41 @@ class Tokenizer:
                 segments.append((text[pos:], False))
         else:
             segments.append((text, False))
-
-        gpt2_re = re.compile(GPT2_PRETOKEN_PATTERN)
-        out_ids: list[int] = []
-
-        for seg, is_special in segments:
-            if not seg:
-                continue
-            if is_special:
-                tok_b = seg.encode("utf-8")
-                out_ids.append(self.bytes_to_id[tok_b])
-                continue
-            # Pretokenize, then BPE each token
-            for m in gpt2_re.finditer(seg):
-                piece = m.group(0)
-                piece_b = piece.encode("utf-8")
-                for token_bytes in self._bpe(piece_b):
-                    out_ids.append(self.bytes_to_id[token_bytes])
-            if len(out_ids) % 10000 == 0:
-                print(f"Encoded {len(out_ids)} tokens out of {len(text)}. Progress: {len(out_ids) / len(text) * 100:.2f}%")
-                print(f"Latest text: {seg[:100]}")
+        
+        # Filter out empty segments and prepare for processing
+        segment_data = [(i, seg, is_special) for i, (seg, is_special) in enumerate(segments) if seg]
+        
+        if not segment_data:
+            return []
+        
+        # Decide whether to use parallel processing
+        use_parallel = parallel and len(segment_data) > 1 and max_workers > 1
+        
+        if use_parallel:
+            # Parallel processing
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(self._process_segment, segment_data))
+            
+            # Sort by index to maintain order and flatten results
+            results.sort(key=lambda x: x[0])
+            out_ids = [token_id for _, token_ids in results for token_id in token_ids]
+        else:
+            # Sequential processing (fallback or small workloads)
+            out_ids = []
+            for seg, is_special in segments:
+                if not seg:
+                    continue
+                if is_special:
+                    tok_b = seg.encode("utf-8")
+                    out_ids.append(self.bytes_to_id[tok_b])
+                    continue
+                # Pretokenize, then BPE each token
+                for m in self._gpt2_pattern.finditer(seg):
+                    piece = m.group(0)
+                    piece_b = piece.encode("utf-8")
+                    for token_bytes in self._bpe(piece_b):
+                        out_ids.append(self.bytes_to_id[token_bytes])
+        
         return out_ids
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:

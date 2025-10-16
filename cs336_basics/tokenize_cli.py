@@ -51,7 +51,8 @@ Examples:
       --merges output_tokenizer/merges.txt \
       --special-tokens "<|endoftext|>" \
       --output data_tokenized/owt_valid.json \
-      --streaming
+      --streaming \
+      --parallel --max-workers 8
     
     # OWT training set (11GB) - definitely use streaming
     uv run -m cs336_basics tokenize encode data/owt_train.txt \
@@ -59,7 +60,8 @@ Examples:
       --merges output_tokenizer/merges.txt \
       --special-tokens "<|endoftext|>" \
       --output data_tokenized/owt_train.json \
-      --streaming
+      --streaming \
+      --parallel --max-workers 8
     
     # Alternative Output Formats
     # Save as text format (space-separated token IDs)
@@ -84,6 +86,42 @@ Examples:
       --merges output_tokenizer/merges.txt \
       --special-tokens "<|endoftext|>" \
       --output data_tokenized/TinyStoriesV2-GPT4-valid_decoded.txt
+    
+    # Parallel Processing Examples
+    # Note: Parallel processing provides speedup for files with many segments (special tokens, sentence boundaries)
+    # Small files may not benefit due to thread overhead. Use --no-parallel for single-segment files.
+    # Enable parallel processing (default, 4 workers)
+    uv run -m cs336_basics tokenize encode data/large_file.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/large_file.json \
+      --parallel --max-workers 8
+    
+    # Disable parallel processing (sequential)
+    uv run -m cs336_basics tokenize encode data/small_file.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/small_file.json \
+      --no-parallel
+    
+    # Streaming with parallel processing for very large files
+    uv run -m cs336_basics tokenize encode data/huge_file.txt \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --output data_tokenized/huge_file.json \
+      --streaming --parallel --max-workers 4
+    
+    # Batch processing with parallel processing
+    uv run -m cs336_basics tokenize encode \
+      --input-dir data/ \
+      --output-dir data_tokenized/ \
+      --vocab output_tokenizer/vocab.json \
+      --merges output_tokenizer/merges.txt \
+      --special-tokens "<|endoftext|>" \
+      --parallel --max-workers 6
     
     # Basic examples (without special tokens)
     uv run -m cs336_basics tokenize encode data/sample.txt --vocab vocab.json --merges merges.txt --output tokens.json
@@ -124,13 +162,24 @@ def load_tokenizer(vocab_path: Path, merges_path: Path, special_tokens: list[str
     )
 
 
-def encode_file_streaming(tokenizer: Tokenizer, input_file: TextIO, chunk_size: int = 8192) -> Iterator[int]:
+def encode_file_streaming(tokenizer: Tokenizer, input_file: TextIO, chunk_size: int = 65536, parallel: bool = True, max_workers: int = 4) -> Iterator[int]:
     """Stream encode a file in chunks to keep memory usage bounded."""
+    # get the file size
+    file_size = input_file.seek(0, os.SEEK_END)
+    print(f"File {input_file.name} size: {file_size} bytes")
+    input_file.seek(0, os.SEEK_SET)
+    print(f"Encoding file {input_file.name} in chunks of {chunk_size} bytes")
+    num_expected_chunks = file_size // chunk_size
+    print(f"Expected {num_expected_chunks} chunks")
+    chunk_count = 0
     while True:
         chunk = input_file.read(chunk_size)
         if not chunk:
             break
-        for token_id in tokenizer.encode(chunk):
+        chunk_count += 1
+        if chunk_count % 1000 == 0:
+            print(f"Encoded {chunk_count} chunks. Progress: {chunk_count / num_expected_chunks * 100:.2f}%; Latest file: {input_file.name}")
+        for token_id in tokenizer.encode(chunk, parallel=parallel, max_workers=max_workers):
             yield token_id
 
 
@@ -237,14 +286,14 @@ def encode_command(args: argparse.Namespace) -> None:
         with open(input_file, "r", encoding="utf-8") as f:
             if args.streaming:
                 # Stream processing for large files
-                for token_id in encode_file_streaming(tokenizer, f, args.chunk_size):
+                for token_id in encode_file_streaming(tokenizer, f, args.chunk_size, args.parallel, args.max_workers):
                     token_ids.append(token_id)
-                    if len(token_ids) % 1000 == 0:
+                    if len(token_ids) % 10000000 == 0:
                         print(f"Encoded {len(token_ids)} tokens. Latest file: {input_file}")
             else:
                 # Load entire file
                 content = f.read()
-                token_ids = tokenizer.encode(content)
+                token_ids = tokenizer.encode(content, parallel=args.parallel, max_workers=args.max_workers)
                 print(f"Encoded {len(token_ids)} tokens. Latest file: {input_file}")
         encode_time = time.time() - encode_start
         print(f"Encoding took {encode_time:.2f}s for {len(token_ids)} tokens ({len(token_ids)/encode_time:.0f} tokens/sec)")
@@ -361,7 +410,10 @@ Examples:
                               help="Output format (default: auto-detect from output file)")
     encode_parser.add_argument("--special-tokens", nargs="*", help="Additional special tokens")
     encode_parser.add_argument("--streaming", action="store_true", help="Use streaming for large files")
-    encode_parser.add_argument("--chunk-size", type=int, default=8192, help="Chunk size for streaming (default: 8192)")
+    encode_parser.add_argument("--chunk-size", type=int, default=65536, help="Chunk size for streaming (default: 65536)")
+    encode_parser.add_argument("--parallel", action="store_true", default=True, help="Enable parallel processing (default: True)")
+    encode_parser.add_argument("--no-parallel", dest="parallel", action="store_false", help="Disable parallel processing")
+    encode_parser.add_argument("--max-workers", type=int, default=4, help="Maximum number of worker threads (default: 4)")
     
     # Decode subcommand
     decode_parser = subparsers.add_parser("decode", help="Decode token IDs back to text")
