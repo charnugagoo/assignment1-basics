@@ -28,24 +28,21 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-    # TODO: Import your Linear class from cs336_basics.nn_utils
-    # from cs336_basics.nn_utils import Linear
+    # Import the Linear class from cs336_basics.nn_utils
+    from cs336_basics.nn_utils import Linear
     
-    # TODO: Create a Linear module instance with the correct dimensions
-    # linear = Linear(in_features=d_in, out_features=d_out)
+    # Create a Linear module instance with the correct dimensions
+    linear = Linear(in_features=d_in, out_features=d_out)
     
-    # TODO: Load the provided weights into the linear module
-    # Hint: You can use Module.load_state_dict() or directly assign to the weight parameter
-    # linear.load_state_dict({"W": weights})  # if your weight parameter is named "W"
-    # OR
-    # linear.W.data = weights
+    # Load the provided weights into the linear module
+    # Direct assignment is more efficient than load_state_dict for single parameter
+    linear.W.data = weights
     
-    # TODO: Run the forward pass on the input features
-    # output = linear(in_features)
+    # Run the forward pass on the input features
+    output = linear(in_features)
     
-    # TODO: Return the output
-    # return output
-    raise NotImplementedError("TODO: Implement the linear adapter")
+    # Return the output
+    return output
 
 
 def run_embedding(
@@ -66,8 +63,20 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
+    # Import the Embedding class from cs336_basics.nn_utils
+    from cs336_basics.nn_utils import Embedding
 
-    raise NotImplementedError
+    # Create an Embedding module instance with the correct dimensions
+    embedding_layer = Embedding(num_embeddings=vocab_size, embedding_dim=d_model)
+    
+    # Load the provided weights into the embedding module
+    embedding_layer.embedding.data = weights
+    
+    # Run the forward pass on the token ids
+    output = embedding_layer(token_ids)
+    
+    # Return the output
+    return output
 
 
 def run_swiglu(

@@ -6,6 +6,6 @@ except importlib.metadata.PackageNotFoundError:
     __version__ = "dev"
 
 # Import neural network modules
-from .nn_utils import Linear
+from .nn_utils import Linear, Embedding
 
-__all__ = ["Linear"]
+__all__ = ["Linear", "Embedding"]
